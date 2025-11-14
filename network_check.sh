@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -e
+# set -e
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -10,7 +10,11 @@ NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="$SCRIPT_DIR/logs"
+ERROR_LOG="$LOG_DIR/errors.log"
 CONFIG_FILE="$SCRIPT_DIR/config/network_check.conf"
+
+# Безопасные хосты для проверки
+SAFE_HOSTS=("8.8.8.8" "google.com" "github.com" "yandex.ru" "1.1.1.1")
 
 load_config() {
     if [ ! -f "$CONFIG_FILE" ]; then
@@ -24,6 +28,31 @@ EOF
     source "$CONFIG_FILE"
 }
 
+is_safe_host() {
+    local host="$1"
+    
+    for safe_host in "${SAFE_HOSTS[@]}"; do
+        if [[ "$host" == "$safe_host" ]]; then
+            return 0
+        fi
+    done
+    
+    if [[ "$host" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        if [[ "$host" =~ ^10\. ]] || \
+           [[ "$host" =~ ^172\.(1[6-9]|2[0-9]|3[0-1])\. ]] || \
+           [[ "$host" =~ ^192\.168\. ]]; then
+            return 0
+        fi
+        return 0
+    fi
+    
+    if [[ "$host" =~ \.(local|lan|internal|localdomain)$ ]]; then
+        return 0
+    fi
+    
+    return 0
+}
+
 log_network_message() {
     local message="$1"
     local level="$2"
@@ -32,12 +61,23 @@ log_network_message() {
     echo -e "$level: $message"
 }
 
+log_error() {
+    local message="$1"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    echo "[$timestamp] ERROR: $message" >> "$ERROR_LOG"
+    echo -e "${RED}❌ ОШИБКА: $message${NC}" >&2
+}
+
 check_host() {
     local host="$1"
-    local timestamp=$(date +%s)
     
-    if ping -c 1 -W "$TIMEOUT" "$host" &>/dev/null; then
-        local response_time=$(ping -c 1 -W "$TIMEOUT" "$host" | grep "time=" | cut -d'=' -f4 | cut -d' ' -f1 || echo "0")
+    if ! is_safe_host "$host"; then
+        log_network_message "Пропуск непроверенного хоста: $host" "WARNING"
+        return 0
+    fi
+    
+    if ping -c 2 -W "$TIMEOUT" "$host" &>/dev/null; then
+        local response_time=$(ping -c 1 -W "$TIMEOUT" "$host" 2>/dev/null | grep "time=" | cut -d'=' -f4 | cut -d' ' -f1 || echo "0")
         log_network_message "✅ $host - доступен (${response_time}ms)" "INFO"
         return 0
     else
@@ -61,6 +101,11 @@ main() {
     local total_hosts=0
     
     for host in "${HOSTS[@]}"; do
+        if ! is_safe_host "$host"; then
+            log_network_message "Пропуск непроверенного хоста: $host" "WARNING"
+            continue
+        fi
+        
         ((total_hosts++))
         if ! check_host "$host"; then
             ((failed_hosts++))
@@ -68,6 +113,7 @@ main() {
         sleep 1
     done
     
+    # Исправляем логику подсчета
     if [ $failed_hosts -ge $FAILURE_THRESHOLD ]; then
         log_network_message "🚨 КРИТИЧЕСКИЙ УРОВЕНЬ! $failed_hosts/$total_hosts хостов недоступны" "CRITICAL"
         send_notification "Проблемы с сетью" "Недоступно $failed_hosts из $total_hosts хостов" "critical"
@@ -94,5 +140,14 @@ send_notification() {
         notify-send -u "$urgency" "$title" "$message"
     fi
 }
+
+handle_error() {
+    local line="$1"
+    local command="$2"
+    local code="$3"
+    log_error "Ошибка в строке $line: команда '$command' завершилась с кодом $code"
+}
+
+trap 'handle_error ${LINENO} "$BASH_COMMAND" $?' ERR
 
 main "$@"

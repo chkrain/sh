@@ -1,0 +1,15 @@
+config/
+logs/
+system_manager.pid
+logs/disk_check.log
+logs/disk_cleanup.log
+logs/system_manager.log
+disk_check.log
+disk_cleanup.log
+system_manager.log
+config/disk_check.conf
+config/system_manager.conf
+disk_check.conf
+system_manager.conf
+*.conf 
+*.log
